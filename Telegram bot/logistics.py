@@ -3,6 +3,8 @@ import smtplib
 import gspread
 import traceback
 import io
+import os
+import json
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
@@ -34,13 +36,11 @@ DRIVE_ROOT_FOLDER_ID = None
 # --- Google Sheets Configuration ---
 # The URL of your Google Sheet.
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1qzs6qFWJIbQaUeJhrUDU7XnFhNiuts9SLp1OWf8Kq7k/edit?usp=sharing"
-# The name of the JSON file with your Google API credentials.
-GOOGLE_CREDENTIALS_FILE = "telegram_bot.json"
 # The name of the worksheet (tab) in your Google Sheet.
 WORKSHEET_NAME = "Submissions"
 
 # --- Email Notification Configuration (Optional) ---
-ENABLE_EMAIL = False # Disabled by default as Drive upload is the primary goal
+ENABLE_EMAIL = False # Disabled by default
 
 # --- Bot Logic ---
 logging.basicConfig(
@@ -55,9 +55,13 @@ logger = logging.getLogger(__name__)
 ) = range(3)
 
 def get_google_services():
-    """Authenticates with Google and returns gspread and Drive service clients."""
+    """Authenticates with Google using environment variables and returns clients."""
     scopes = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/drive']
-    creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_FILE, scopes=scopes)
+    
+    # Get credentials from environment variable
+    gcp_json_credentials_dict = json.loads(os.environ["GCP_CREDENTIALS_JSON"])
+    creds = Credentials.from_service_account_info(gcp_json_credentials_dict, scopes=scopes)
+
     gspread_client = gspread.authorize(creds)
     drive_service = build('drive', 'v3', credentials=creds)
     return gspread_client, drive_service
@@ -148,7 +152,6 @@ def upload_to_drive(drive_service, container_folder_id, file_content, file_name)
     file_metadata = {'name': file_name, 'parents': [container_folder_id]}
     media = MediaIoBaseUpload(io.BytesIO(file_content), mimetype='image/jpeg', resumable=True)
     file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-    # Make file publicly viewable
     drive_service.permissions().create(fileId=file.get('id'), body={'type': 'anyone', 'role': 'reader'}).execute()
     return file.get('webViewLink')
 
@@ -158,7 +161,7 @@ def get_or_create_folder(drive_service, folder_name, parent_id=None):
     if parent_id:
         query += f" and '{parent_id}' in parents"
     
-    response = drive_service.files().list(q=query, spaces='drive', fields='files(id)').execute()
+    response = drive_service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
     if response.get('files'):
         return response.get('files')[0].get('id')
     else:
@@ -193,25 +196,44 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     submission_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     await update.message.reply_text("Submission confirmed! Uploading photos to Google Drive...", reply_markup=ReplyKeyboardRemove())
 
-    gspread_client, drive_service = get_google_services()
-    
-    # --- Upload photos to Google Drive ---
     drive_photo_links = []
-    photo_files = user_data.get("photos", [])
-    if photo_files:
-        try:
-            root_folder_id = DRIVE_ROOT_FOLDER_ID or get_or_create_folder(drive_service, "Telegram Bot Submissions")
-            container_folder_id = get_or_create_folder(drive_service, user_data['container_number'], root_folder_id)
-            
-            for i, photo_file in enumerate(photo_files):
-                file_content = await photo_file.download_as_bytearray()
-                file_name = f"photo_{i+1}_{submission_time.replace(':', '-')}.jpg"
-                drive_link = upload_to_drive(drive_service, container_folder_id, file_content, file_name)
-                drive_photo_links.append(drive_link)
-        except Exception as e:
-            logger.error("Failed to upload to Google Drive:")
-            logger.error(traceback.format_exc())
-            await update.message.reply_text("An error occurred while uploading photos to Google Drive. Please notify an admin.")
+    try:
+        gspread_client, drive_service = get_google_services()
+        photo_files = user_data.get("photos", [])
+        if photo_files:
+                root_folder_id = DRIVE_ROOT_FOLDER_ID or get_or_create_folder(drive_service, "Telegram Bot Submissions")
+                container_folder_id = get_or_create_folder(drive_service, user_data['container_number'], root_folder_id)
+                
+                for i, photo_file in enumerate(photo_files):
+                    file_content = await photo_file.download_as_bytearray()
+                    file_name = f"photo_{i+1}_{submission_time.replace(':', '-')}.jpg"
+                    drive_link = upload_to_drive(drive_service, container_folder_id, file_content, file_name)
+                    drive_photo_links.append(drive_link)
+    except Exception as e:
+        logger.error("Failed to upload to Google Drive:")
+        logger.error(traceback.format_exc())
+        await update.message.reply_text("An error occurred while uploading photos to Google Drive. Please notify an admin.")
+    
+    # Update Google Sheet
+    try:
+        gspread_client, _ = get_google_services()
+        sheet = gspread_client.open_by_url(GOOGLE_SHEET_URL).worksheet(WORKSHEET_NAME)
+        photo_col_f = drive_photo_links[0] if len(drive_photo_links) > 0 else ""
+        photo_col_g = drive_photo_links[1] if len(drive_photo_links) > 1 else ""
+        photo_col_h = "\n".join(drive_photo_links[2:]) if len(drive_photo_links) > 2 else ""
+
+        sheet_row = [
+            submission_time, f"{user.full_name} (@{user.username})",
+            user_data['container_number'], user_data['quantity'], user_data['notes'],
+            photo_col_f, photo_col_g, photo_col_h, ""
+        ]
+        sheet.append_row(sheet_row)
+        logger.info("Google Sheet updated successfully.")
+    except Exception as e:
+        logger.error("Failed to update Google Sheet:")
+        logger.error(traceback.format_exc())
+
+    await update.message.reply_text("Submission complete!")
 
     final_report_markdown = (
         f"📝 *New Logistics Report*\n\n"
@@ -222,34 +244,9 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         f"*Damage Notes/Remarks:*\n`{user_data['notes']}`"
     )
 
-    context.bot_data.setdefault('submissions', []).append({
-        'report_markdown': final_report_markdown, 'photos': [pf.file_id for pf in photo_files],
-        'container_number': user_data['container_number'], 'timestamp': submission_time
-    })
-    
-    photo_col_f = drive_photo_links[0] if len(drive_photo_links) > 0 else ""
-    photo_col_g = drive_photo_links[1] if len(drive_photo_links) > 1 else ""
-    photo_col_h = "\n".join(drive_photo_links[2:]) if len(drive_photo_links) > 2 else ""
-
-    sheet_row = [
-        submission_time, f"{user.full_name} (@{user.username})",
-        user_data['container_number'], user_data['quantity'], user_data['notes'],
-        photo_col_f, photo_col_g, photo_col_h, ""
-    ]
-    
-    try:
-        sheet = gspread_client.open_by_url(GOOGLE_SHEET_URL).worksheet(WORKSHEET_NAME)
-        sheet.append_row(sheet_row)
-        logger.info("Google Sheet updated successfully.")
-    except Exception as e:
-        logger.error("Failed to update Google Sheet:")
-        logger.error(traceback.format_exc())
-
-    await update.message.reply_text("Submission complete!")
-
     if TARGET_CHAT_ID:
         try:
-            photo_ids = [pf.file_id for pf in photo_files]
+            photo_ids = [pf.file_id for pf in user_data.get("photos", [])]
             if photo_ids:
                 media_group = [InputMediaPhoto(media=pid) for pid in photo_ids]
                 media_group[0] = InputMediaPhoto(media=photo_ids[0], caption=final_report_markdown, parse_mode='Markdown')
@@ -263,14 +260,6 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_data.clear()
     return ConversationHandler.END
 
-
-async def review_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # This remains unchanged
-    pass
-
-async def resend_submission_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # This remains unchanged
-    pass
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels the current operation."""
@@ -305,10 +294,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("help", start))
     application.add_handler(conv_handler)
-    # Review functionality can be added back if needed, kept minimal for now
-    # application.add_handler(CommandHandler("review", review_command))
-    # application.add_handler(CallbackQueryHandler(resend_submission_callback))
-
+    
     print("Bot is running...")
     application.run_polling()
 
