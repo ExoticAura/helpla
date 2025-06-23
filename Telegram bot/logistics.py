@@ -39,26 +39,24 @@ GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1qzs6qFWJIbQaUeJhrUDU
 # The name of the worksheet (tab) in your Google Sheet.
 WORKSHEET_NAME = "Submissions"
 
-# --- Email Notification Configuration (Optional) ---
-ENABLE_EMAIL = False # Disabled by default
-
 # --- Bot Logic ---
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
+# Define states for the new conversation flow
 (
+    SELECT_TYPE,
     GET_ALL_TEXT,
     GET_PHOTOS,
     CONFIRM_SUBMISSION,
-) = range(3)
+) = range(4)
 
 def get_google_services():
     """Authenticates with Google using environment variables and returns clients."""
     scopes = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/drive']
     
-    # Get credentials from environment variable
     gcp_json_credentials_dict = json.loads(os.environ["GCP_CREDENTIALS_JSON"])
     creds = Credentials.from_service_account_info(gcp_json_credentials_dict, scopes=scopes)
 
@@ -78,16 +76,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def start_submission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Starts the submission process with instructions for single-message input."""
+    """Asks the user to select the submission type."""
     context.user_data.clear()
+    keyboard = [
+        [
+            InlineKeyboardButton("Inbound", callback_data="Inbound"),
+            InlineKeyboardButton("Outbound", callback_data="Outbound"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Please select the submission type:", reply_markup=reply_markup)
+    return SELECT_TYPE
+
+
+async def get_submission_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Stores the submission type and asks for text details."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data["submission_type"] = query.data
+    
+    await query.edit_message_text(text=f"You selected: {query.data}")
+
     instructions = (
-        "Let's start a new submission.\n\n"
-        "Please provide the following details in a single message, with each item on a new line:\n"
+        "Now, please provide the following details in a single message, with each item on a new line:\n"
         "1. Container/Reference Number\n"
         "2. Number of Pallets/Cartons\n"
         "3. Damage Notes/Remarks (or 'None' if not applicable)"
     )
-    await update.message.reply_text(instructions)
+    await context.bot.send_message(chat_id=query.message.chat_id, text=instructions)
     return GET_ALL_TEXT
 
 
@@ -131,6 +147,7 @@ async def photos_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     
     summary = (
         f"✅ *New Submission Summary*\n\n"
+        f"*Type:* `{user_data['submission_type']}`\n"
         f"*Container/Reference:* `{user_data['container_number']}`\n"
         f"*Pallet/Carton Count:* `{user_data['quantity']}`\n"
         f"*Damage Notes/Remarks:*\n`{user_data['notes']}`\n\n"
@@ -178,7 +195,7 @@ def setup_google_sheet():
         sheet = gspread_client.open_by_url(GOOGLE_SHEET_URL).worksheet(WORKSHEET_NAME)
         if not sheet.get_all_values():
             headers = [
-                "Timestamp", "Email Address", "Container/PO Number", 
+                "Timestamp", "Email Address", "Submission Type", "Container/PO Number", 
                 "Number of Pallets/ Carton", "Damage notes / Remarks", 
                 "Photo Option", "Additional Photo Option", 
                 "Additional Photo Option #2", "All Photo Links"
@@ -189,11 +206,39 @@ def setup_google_sheet():
         logger.error("Failed to setup Google Sheet:")
         logger.error(traceback.format_exc())
 
+def send_email_report(subject: str, html_body: str):
+    """Sends a report via email using credentials from environment variables."""
+    try:
+        smtp_server = os.environ["SMTP_SERVER"]
+        smtp_port = int(os.environ.get("SMTP_PORT", 587))
+        email_sender = os.environ["EMAIL_SENDER"]
+        email_password = os.environ["EMAIL_PASSWORD"]
+        email_recipients = os.environ["EMAIL_RECIPIENTS"].split(',')
+
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = email_sender
+        msg['To'] = ", ".join(email_recipients)
+
+        part = MIMEText(html_body, 'html')
+        msg.attach(part)
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(email_sender, email_password)
+            server.sendmail(email_sender, email_recipients, msg.as_string())
+        logger.info("Email sent successfully!")
+    except KeyError:
+        logger.warning("Email environment variables not set. Skipping email notification.")
+    except Exception as e:
+        logger.error(f"Failed to send email: {e}")
+        logger.error(traceback.format_exc())
+
 async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Finalizes submission, uploads to Drive, sends reports, and updates Google Sheet."""
     user = update.message.from_user
     user_data = context.user_data
-    submission_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    submission_time = datetime.now()
     await update.message.reply_text("Submission confirmed! Uploading photos to Google Drive...", reply_markup=ReplyKeyboardRemove())
 
     drive_photo_links = []
@@ -206,7 +251,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 
                 for i, photo_file in enumerate(photo_files):
                     file_content = await photo_file.download_as_bytearray()
-                    file_name = f"photo_{i+1}_{submission_time.replace(':', '-')}.jpg"
+                    file_name = f"photo_{i+1}_{submission_time.strftime('%Y-%m-%d_%H-%M-%S')}.jpg"
                     drive_link = upload_to_drive(drive_service, container_folder_id, file_content, file_name)
                     drive_photo_links.append(drive_link)
     except Exception as e:
@@ -214,7 +259,33 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         logger.error(traceback.format_exc())
         await update.message.reply_text("An error occurred while uploading photos to Google Drive. Please notify an admin.")
     
-    # Update Google Sheet
+    # --- Send Email Notification ---
+    date_str = submission_time.strftime('%d/%m/%Y')
+    time_str = submission_time.strftime('%H%MH')
+    email_subject = f"Container Submission {user_data['submission_type']}: {user_data['container_number']} @ {date_str}, {time_str}"
+    
+    qa_list = [
+        {"question": "Submission Type", "answer": user_data['submission_type']},
+        {"question": "Container/Reference Number", "answer": user_data['container_number']},
+        {"question": "Number of Pallets/Cartons", "answer": user_data['quantity']},
+        {"question": "Damage Notes/Remarks", "answer": user_data['notes']}
+    ]
+
+    email_html_body = f"<h2>{email_subject}</h2><ul>"
+    for pair in qa_list:
+        email_html_body += f"<li><b>{pair['question']}</b>: {pair['answer']}</li>"
+    email_html_body += "</ul>"
+
+    if drive_photo_links:
+        email_html_body += "<h3>Uploaded File Links:</h3><ul>"
+        for link in drive_photo_links:
+            email_html_body += f'<li><a href="{link}">{link}</a></li>'
+        email_html_body += "</ul>"
+    
+    send_email_report(email_subject, email_html_body)
+    # ---
+    
+    # --- Update Google Sheet ---
     try:
         gspread_client, _ = get_google_services()
         sheet = gspread_client.open_by_url(GOOGLE_SHEET_URL).worksheet(WORKSHEET_NAME)
@@ -223,8 +294,12 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         photo_col_h = "\n".join(drive_photo_links[2:]) if len(drive_photo_links) > 2 else ""
 
         sheet_row = [
-            submission_time, f"{user.full_name} (@{user.username})",
-            user_data['container_number'], user_data['quantity'], user_data['notes'],
+            submission_time.strftime("%Y-%m-%d %H:%M:%S"),
+            f"{user.full_name} (@{user.username})",
+            user_data['submission_type'],
+            user_data['container_number'],
+            user_data['quantity'],
+            user_data['notes'],
             photo_col_f, photo_col_g, photo_col_h, ""
         ]
         sheet.append_row(sheet_row)
@@ -237,7 +312,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     final_report_markdown = (
         f"📝 *New Logistics Report*\n\n"
-        f"*Timestamp:* {submission_time}\n"
+        f"*Timestamp:* {submission_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"*Submitted by:* {user.full_name} (@{user.username})\n"
         f"*Container/Reference:* `{user_data['container_number']}`\n"
         f"*Pallet/Carton Count:* `{user_data['quantity']}`\n"
@@ -274,11 +349,10 @@ def main() -> None:
     
     application = Application.builder().token(BOT_TOKEN).build()
     
-    application.bot_data['submissions'] = []
-    
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_submission)],
         states={
+            SELECT_TYPE: [CallbackQueryHandler(get_submission_type)],
             GET_ALL_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_all_text)],
             GET_PHOTOS: [
                 MessageHandler(filters.PHOTO, get_photos),
