@@ -36,8 +36,6 @@ DRIVE_ROOT_FOLDER_ID = None
 # --- Google Sheets Configuration ---
 # The URL of your Google Sheet.
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1qzs6qFWJIbQaUeJhrUDU7XnFhNiuts9SLp1OWf8Kq7k/edit?usp=sharing"
-# The name of the worksheet (tab) in your Google Sheet.
-WORKSHEET_NAME = "Submissions"
 
 # --- Bot Logic ---
 logging.basicConfig(
@@ -69,8 +67,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     await update.message.reply_text(
         "Welcome to the ULD Logistics Bot.\n"
-        "To start a new submission, use the /start command.\n"
-        "To review past submissions, use the /review command."
+        "To start a new submission, use the /start command."
     )
     return ConversationHandler.END
 
@@ -188,24 +185,6 @@ def get_or_create_folder(drive_service, folder_name, parent_id=None):
         folder = drive_service.files().create(body=file_metadata, fields='id').execute()
         return folder.get('id')
 
-def setup_google_sheet():
-    """Checks for headers and adds them to the sheet if it's empty."""
-    try:
-        gspread_client, _ = get_google_services()
-        sheet = gspread_client.open_by_url(GOOGLE_SHEET_URL).worksheet(WORKSHEET_NAME)
-        if not sheet.get_all_values():
-            headers = [
-                "Timestamp", "Email Address", "Submission Type", "Container/PO Number", 
-                "Number of Pallets/ Carton", "Damage notes / Remarks", 
-                "Photo Option", "Additional Photo Option", 
-                "Additional Photo Option #2", "All Photo Links"
-            ]
-            sheet.append_row(headers)
-            logger.info("Google Sheet headers created successfully.")
-    except Exception as e:
-        logger.error("Failed to setup Google Sheet:")
-        logger.error(traceback.format_exc())
-
 def send_email_report(subject: str, html_body: str):
     """Sends a report via email using credentials from environment variables."""
     try:
@@ -288,7 +267,29 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # --- Update Google Sheet ---
     try:
         gspread_client, _ = get_google_services()
-        sheet = gspread_client.open_by_url(GOOGLE_SHEET_URL).worksheet(WORKSHEET_NAME)
+        spreadsheet = gspread_client.open_by_url(GOOGLE_SHEET_URL)
+        
+        # Determine worksheet name based on submission type
+        if user_data['submission_type'] == "Inbound":
+            worksheet_name = "Inbound Submissions 20/5/2025"
+        else: # Outbound
+            worksheet_name = "Outbound Submissions 20/5/2025"
+        
+        try:
+            sheet = spreadsheet.worksheet(worksheet_name)
+        except gspread.exceptions.WorksheetNotFound:
+            # Create the worksheet if it doesn't exist
+            sheet = spreadsheet.add_worksheet(title=worksheet_name, rows=100, cols=20)
+            # Add headers to the new sheet
+            headers = [
+                "Timestamp", "Email Address", "Container/PO Number", 
+                "Number of Pallets/ Carton", "Damage notes / Remarks", 
+                "Photo Option", "Additional Photo Option", 
+                "Additional Photo Option #2", "All Photo Links"
+            ]
+            sheet.append_row(headers)
+            logger.info(f"Created new worksheet '{worksheet_name}' with headers.")
+
         photo_col_f = drive_photo_links[0] if len(drive_photo_links) > 0 else ""
         photo_col_g = drive_photo_links[1] if len(drive_photo_links) > 1 else ""
         photo_col_h = "\n".join(drive_photo_links[2:]) if len(drive_photo_links) > 2 else ""
@@ -296,14 +297,13 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         sheet_row = [
             submission_time.strftime("%Y-%m-%d %H:%M:%S"),
             f"{user.full_name} (@{user.username})",
-            user_data['submission_type'],
             user_data['container_number'],
             user_data['quantity'],
             user_data['notes'],
             photo_col_f, photo_col_g, photo_col_h, ""
         ]
         sheet.append_row(sheet_row)
-        logger.info("Google Sheet updated successfully.")
+        logger.info(f"Google Sheet '{worksheet_name}' updated successfully.")
     except Exception as e:
         logger.error("Failed to update Google Sheet:")
         logger.error(traceback.format_exc())
@@ -345,7 +345,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 def main() -> None:
     """Sets up and runs the bot."""
-    setup_google_sheet()
+    # setup_google_sheet() is no longer needed here, it's handled dynamically
     
     application = Application.builder().token(BOT_TOKEN).build()
     
