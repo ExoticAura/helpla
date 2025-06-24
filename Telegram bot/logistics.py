@@ -31,7 +31,7 @@ BOT_TOKEN = "7906935873:AAFF5dspEavs_k251lu3fgvQKhS_jSRassw"
 # The Chat ID for your Admin Team's group.
 TARGET_CHAT_ID = -1002848963725
 # The ID of the root folder in Google Drive where submission folders will be created.
-# Leave as None to create a new root folder named "Telegram Bot Submissions".
+# Leave as None to create a new root folder named "Form Submissions".
 DRIVE_ROOT_FOLDER_ID = None 
 
 # --- Google Sheets Configuration ---
@@ -78,8 +78,8 @@ async def start_submission(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     context.user_data.clear()
     keyboard = [
         [
-            InlineKeyboardButton("Inbound", callback_data="Inbound"),
-            InlineKeyboardButton("Outbound", callback_data="Outbound"),
+            InlineKeyboardButton("Inbound / 进货上传", callback_data="Inbound"),
+            InlineKeyboardButton("Outbound / 出货上传", callback_data="Outbound"),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -94,8 +94,8 @@ async def start_submission_from_button(update: Update, context: ContextTypes.DEF
     context.user_data.clear()
     keyboard = [
         [
-            InlineKeyboardButton("Inbound", callback_data="Inbound"),
-            InlineKeyboardButton("Outbound", callback_data="Outbound"),
+            InlineKeyboardButton("Inbound / 进货上传", callback_data="Inbound"),
+            InlineKeyboardButton("Outbound / 出货上传", callback_data="Outbound"),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -114,8 +114,8 @@ async def get_submission_type(update: Update, context: ContextTypes.DEFAULT_TYPE
     instructions = (
         "Now, please provide the following details in a single message, with each item on a new line:\n"
         "1. Container/Reference Number\n"
-        "2. Number of Pallets/Cartons\n"
-        "3. Damage Notes/Remarks (or 'None' if not applicable)"
+        "2. Number of Pallets/Cartons (托盘数量)\n"
+        "3. Damage Notes/Remarks (备注/损坏说明) (or 'None' if not applicable)"
     )
     await context.bot.send_message(chat_id=query.message.chat_id, text=instructions)
     return GET_ALL_TEXT
@@ -137,7 +137,7 @@ async def get_all_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data["photos"] = []
     reply_keyboard = [["Done Uploading"]]
     await update.message.reply_text(
-        "Thank you. Now, please upload the required photos.\n"
+        "Thank you. Now, please upload the required photos (照片选项).\n"
         "Send your photos now. Press 'Done Uploading' when you are finished.",
         reply_markup=ReplyKeyboardMarkup(
             reply_keyboard, one_time_keyboard=True, resize_keyboard=True
@@ -160,12 +160,12 @@ async def photos_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     await update.message.reply_text(f"Thank you. {photo_count} photo(s) have been received.", reply_markup=ReplyKeyboardRemove())
     
     summary = (
-        f"✅ *New Submission Summary*\n\n"
-        f"*Type:* `{user_data['submission_type']}`\n"
+        f"✅ *New Submission Summary / 提交总结*\n\n"
+        f"*Type / 类型:* `{user_data['submission_type']}`\n"
         f"*Container/Reference:* `{user_data['container_number']}`\n"
-        f"*Pallet/Carton Count:* `{user_data['quantity']}`\n"
-        f"*Damage Notes/Remarks:*\n`{user_data['notes']}`\n\n"
-        f"*Photos Uploaded:* `{photo_count}`"
+        f"*Number of Pallets/Cartons / 托盘数量:* `{user_data['quantity']}`\n"
+        f"*Damage Notes/Remarks / 备注/损坏说明:*\n`{user_data['notes']}`\n\n"
+        f"*Photos Uploaded / 照片选项:* `{photo_count}`"
     )
     await update.message.reply_text(summary, parse_mode='Markdown')
     
@@ -246,7 +246,8 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         gspread_client, drive_service = get_google_services()
         photo_files = user_data.get("photos", [])
         if photo_files:
-                root_folder_id = DRIVE_ROOT_FOLDER_ID or get_or_create_folder(drive_service, "Telegram Bot Submissions")
+                # Updated root folder name to match Apps Script
+                root_folder_id = DRIVE_ROOT_FOLDER_ID or get_or_create_folder(drive_service, "Form Submissions")
                 container_folder_id = get_or_create_folder(drive_service, user_data['container_number'], root_folder_id)
                 
                 for i, photo_file in enumerate(photo_files):
@@ -266,10 +267,10 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     email_subject = f"Container Submission {user_data['submission_type']}: {user_data['container_number']} @ {formatted_timestamp}"
     
     qa_list = [
-        {"question": "Submission Type", "answer": user_data['submission_type']},
+        {"question": "Submission Type / 类型", "answer": user_data['submission_type']},
         {"question": "Container/Reference Number", "answer": user_data['container_number']},
-        {"question": "Number of Pallets/Cartons", "answer": user_data['quantity']},
-        {"question": "Damage Notes/Remarks", "answer": user_data['notes']}
+        {"question": "Number of Pallets/Cartons / 托盘数量", "answer": user_data['quantity']},
+        {"question": "Damage Notes/Remarks / 备注/损坏说明", "answer": user_data['notes']}
     ]
 
     email_html_body = f"<h2>{email_subject}</h2><ul>"
@@ -302,8 +303,8 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             sheet = spreadsheet.add_worksheet(title=worksheet_name, rows=100, cols=20)
             headers = [
                 "Timestamp", "Email Address", "Container/PO Number", 
-                "Number of Pallets/ Carton", "Damage notes / Remarks", 
-                "Photo Option", "Additional Photo Option", 
+                "Number of Pallets/ Carton (托盘数量)", "Damage notes (备注/损坏说明) / Remarks", 
+                "Photo Option / 照片选项", "Additional Photo Option", 
                 "Additional Photo Option #2", "All Photo Links"
             ]
             sheet.append_row(headers)
@@ -321,8 +322,9 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             user_data['notes'],
             photo_col_f, photo_col_g, photo_col_h, ""
         ]
-        sheet.append_row(sheet_row)
-        logger.info(f"Google Sheet '{worksheet_name}' updated successfully.")
+        # Change from append_row to insert_row
+        sheet.insert_row(sheet_row, 2, value_input_option='USER_ENTERED')
+        logger.info(f"Google Sheet '{worksheet_name}' updated successfully by inserting a new row.")
     except Exception as e:
         logger.error("Failed to update Google Sheet:")
         logger.error(traceback.format_exc())
@@ -331,12 +333,12 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     # --- Send to Admin Group ---
     final_report_markdown = (
-        f"📝 *New Logistics Report*\n\n"
-        f"*Timestamp:* {formatted_timestamp}\n"
-        f"*Submitted by:* {user.full_name} (@{user.username})\n"
+        f"📝 *New Logistics Report / 新物流报告*\n\n"
+        f"*Timestamp / 时间戳:* {formatted_timestamp}\n"
+        f"*Submitted by / 提交人:* {user.full_name} (@{user.username})\n"
         f"*Container/Reference:* `{user_data['container_number']}`\n"
-        f"*Pallet/Carton Count:* `{user_data['quantity']}`\n"
-        f"*Damage Notes/Remarks:*\n`{user_data['notes']}`"
+        f"*Number of Pallets/Cartons / 托盘数量:* `{user_data['quantity']}`\n"
+        f"*Damage Notes/Remarks / 备注/损坏说明:*\n`{user_data['notes']}`"
     )
 
     if TARGET_CHAT_ID:
