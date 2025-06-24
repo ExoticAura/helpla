@@ -254,10 +254,11 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         logger.error(traceback.format_exc())
         await update.message.reply_text("An error occurred while uploading photos to Google Drive. Please notify an admin.")
     
+    # Define the new timestamp format
+    formatted_timestamp = submission_time.strftime("%d/%m/%Y %H:%M:%S")
+
     # --- Send Email Notification ---
-    date_str = submission_time.strftime('%d/%m/%Y')
-    time_str = submission_time.strftime('%H%MH')
-    email_subject = f"Container Submission {user_data['submission_type']}: {user_data['container_number']} @ {date_str}, {time_str}"
+    email_subject = f"Container Submission {user_data['submission_type']}: {user_data['container_number']} @ {formatted_timestamp}"
     
     qa_list = [
         {"question": "Submission Type", "answer": user_data['submission_type']},
@@ -308,7 +309,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         photo_col_h = "\n".join(drive_photo_links[2:]) if len(drive_photo_links) > 2 else ""
 
         sheet_row = [
-            submission_time.strftime("%Y-%m-%d %H:%M:%S"),
+            formatted_timestamp,
             f"{user.full_name} (@{user.username})",
             user_data['container_number'],
             user_data['quantity'],
@@ -326,7 +327,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # --- Send to Admin Group ---
     final_report_markdown = (
         f"📝 *New Logistics Report*\n\n"
-        f"*Timestamp:* {submission_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"*Timestamp:* {formatted_timestamp}\n"
         f"*Submitted by:* {user.full_name} (@{user.username})\n"
         f"*Container/Reference:* `{user_data['container_number']}`\n"
         f"*Pallet/Carton Count:* `{user_data['quantity']}`\n"
