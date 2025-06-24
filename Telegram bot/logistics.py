@@ -5,6 +5,7 @@ import traceback
 import io
 import os
 import json
+import pytz
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
@@ -233,7 +234,12 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Finalizes submission, uploads to Drive, sends reports, and updates Google Sheet."""
     user = update.message.from_user
     user_data = context.user_data
-    submission_time = datetime.now()
+    
+    # Get current time in UTC and convert to Singapore time
+    utc_now = datetime.utcnow().replace(tzinfo=pytz.utc)
+    sg_timezone = pytz.timezone("Asia/Singapore")
+    submission_time = utc_now.astimezone(sg_timezone)
+
     await update.message.reply_text("Submission confirmed! Uploading photos to Google Drive...", reply_markup=ReplyKeyboardRemove())
 
     drive_photo_links = []
