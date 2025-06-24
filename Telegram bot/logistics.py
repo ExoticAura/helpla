@@ -67,13 +67,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     await update.message.reply_text(
         "Welcome to the ULD Logistics Bot.\n"
-        "To start a new submission, use the /start command."
+        "To start a new submission, use the /start command or the menu button."
     )
     return ConversationHandler.END
 
 
 async def start_submission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Asks the user to select the submission type."""
+    """Asks the user to select the submission type from a command."""
     context.user_data.clear()
     keyboard = [
         [
@@ -83,6 +83,22 @@ async def start_submission(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Please select the submission type:", reply_markup=reply_markup)
+    return SELECT_TYPE
+
+
+async def start_submission_from_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Asks the user to select the submission type from a button click."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    keyboard = [
+        [
+            InlineKeyboardButton("Inbound", callback_data="Inbound"),
+            InlineKeyboardButton("Outbound", callback_data="Outbound"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(text="Please select the submission type:", reply_markup=reply_markup)
     return SELECT_TYPE
 
 
@@ -269,7 +285,6 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         gspread_client, _ = get_google_services()
         spreadsheet = gspread_client.open_by_url(GOOGLE_SHEET_URL)
         
-        # Determine worksheet name based on submission type
         if user_data['submission_type'] == "Inbound":
             worksheet_name = "Inbound Submissions 20/5/2025"
         else: # Outbound
@@ -278,9 +293,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         try:
             sheet = spreadsheet.worksheet(worksheet_name)
         except gspread.exceptions.WorksheetNotFound:
-            # Create the worksheet if it doesn't exist
             sheet = spreadsheet.add_worksheet(title=worksheet_name, rows=100, cols=20)
-            # Add headers to the new sheet
             headers = [
                 "Timestamp", "Email Address", "Container/PO Number", 
                 "Number of Pallets/ Carton", "Damage notes / Remarks", 
@@ -310,27 +323,10 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     await update.message.reply_text("Submission complete!")
 
-    final_report_markdown = (
-        f"📝 *New Logistics Report*\n\n"
-        f"*Timestamp:* {submission_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"*Submitted by:* {user.full_name} (@{user.username})\n"
-        f"*Container/Reference:* `{user_data['container_number']}`\n"
-        f"*Pallet/Carton Count:* `{user_data['quantity']}`\n"
-        f"*Damage Notes/Remarks:*\n`{user_data['notes']}`"
-    )
-
-    if TARGET_CHAT_ID:
-        try:
-            photo_ids = [pf.file_id for pf in user_data.get("photos", [])]
-            if photo_ids:
-                media_group = [InputMediaPhoto(media=pid) for pid in photo_ids]
-                media_group[0] = InputMediaPhoto(media=photo_ids[0], caption=final_report_markdown, parse_mode='Markdown')
-                for i in range(0, len(media_group), 10):
-                    await context.bot.send_media_group(chat_id=TARGET_CHAT_ID, media=media_group[i:i + 10])
-            else:
-                await context.bot.send_message(chat_id=TARGET_CHAT_ID, text=final_report_markdown, parse_mode='Markdown')
-        except Exception as e:
-            logger.error(f"Failed to send to TARGET_CHAT_ID: {e}")
+    # --- Offer to start a new submission ---
+    keyboard = [[InlineKeyboardButton("Start New Submission", callback_data="new_submission")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Ready for the next one?", reply_markup=reply_markup)
 
     user_data.clear()
     return ConversationHandler.END
@@ -345,12 +341,13 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 def main() -> None:
     """Sets up and runs the bot."""
-    # setup_google_sheet() is no longer needed here, it's handled dynamically
-    
     application = Application.builder().token(BOT_TOKEN).build()
     
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start_submission)],
+        entry_points=[
+            CommandHandler("start", start_submission),
+            CallbackQueryHandler(start_submission_from_button, pattern="^new_submission$")
+        ],
         states={
             SELECT_TYPE: [CallbackQueryHandler(get_submission_type)],
             GET_ALL_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_all_text)],
