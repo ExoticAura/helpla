@@ -323,6 +323,32 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     await update.message.reply_text("Submission complete!")
 
+    # --- Send to Admin Group ---
+    final_report_markdown = (
+        f"📝 *New Logistics Report*\n\n"
+        f"*Timestamp:* {submission_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"*Submitted by:* {user.full_name} (@{user.username})\n"
+        f"*Container/Reference:* `{user_data['container_number']}`\n"
+        f"*Pallet/Carton Count:* `{user_data['quantity']}`\n"
+        f"*Damage Notes/Remarks:*\n`{user_data['notes']}`"
+    )
+
+    if TARGET_CHAT_ID:
+        try:
+            photo_ids = [pf.file_id for pf in user_data.get("photos", [])]
+            if photo_ids:
+                media_group = [InputMediaPhoto(media=pid) for pid in photo_ids]
+                media_group[0] = InputMediaPhoto(media=photo_ids[0], caption=final_report_markdown, parse_mode='Markdown')
+                for i in range(0, len(media_group), 10):
+                    await context.bot.send_media_group(chat_id=TARGET_CHAT_ID, media=media_group[i:i + 10])
+            else:
+                await context.bot.send_message(chat_id=TARGET_CHAT_ID, text=final_report_markdown, parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Failed to send to TARGET_CHAT_ID: {e}")
+            # Add user-facing error message for debugging
+            error_message = f"Failed to send report to the admin group. Please notify an admin.\n\n*Error details:* `{e}`"
+            await update.message.reply_text(error_message, parse_mode='Markdown')
+
     # --- Offer to start a new submission ---
     keyboard = [[InlineKeyboardButton("Start New Submission", callback_data="new_submission")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
