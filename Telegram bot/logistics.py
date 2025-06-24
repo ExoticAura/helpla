@@ -322,9 +322,9 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             user_data['notes'],
             photo_col_f, photo_col_g, photo_col_h, ""
         ]
-        # Change from append_row to insert_row
-        sheet.insert_row(sheet_row, 2, value_input_option='USER_ENTERED')
-        logger.info(f"Google Sheet '{worksheet_name}' updated successfully by inserting a new row.")
+        # Reverted back to append_row
+        sheet.append_row(sheet_row)
+        logger.info(f"Google Sheet '{worksheet_name}' updated successfully by appending a new row.")
     except Exception as e:
         logger.error("Failed to update Google Sheet:")
         logger.error(traceback.format_exc())
