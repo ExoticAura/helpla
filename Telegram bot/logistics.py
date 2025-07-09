@@ -32,7 +32,7 @@ BOT_TOKEN = "7906935873:AAFF5dspEavs_k251lu3fgvQKhS_jSRassw"
 TARGET_CHAT_ID = -1002848963725
 # The ID of the root folder in Google Drive where submission folders will be created.
 # Leave as None to create a new root folder named "Form Submissions".
-DRIVE_ROOT_FOLDER_ID = None 
+DRIVE_ROOT_FOLDER_ID = None
 
 # --- Google Sheets Configuration ---
 # The URL of your Google Sheet.
@@ -154,9 +154,22 @@ async def get_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def photos_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Finalizes photo upload and shows summary for confirmation."""
+    """Finalizes photo upload, ensures at least one photo is present, and shows summary for confirmation."""
     user_data = context.user_data
     photo_count = len(user_data.get('photos', []))
+
+    # Check if at least one photo has been uploaded.
+    if photo_count == 0:
+        reply_keyboard = [["Done Uploading"]]
+        await update.message.reply_text(
+            "⚠️ **A photo is required.**\n\nPlease upload at least one photo and then press 'Done Uploading'.",
+            reply_markup=ReplyKeyboardMarkup(
+                reply_keyboard, one_time_keyboard=True, resize_keyboard=True
+            ),
+            parse_mode='Markdown'
+        )
+        return GET_PHOTOS # Stay in the photo submission state.
+
     await update.message.reply_text(f"Thank you. {photo_count} photo(s) have been received.", reply_markup=ReplyKeyboardRemove())
     
     summary = (
