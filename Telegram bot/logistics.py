@@ -31,8 +31,12 @@ BOT_TOKEN = "7906935873:AAFF5dspEavs_k251lu3fgvQKhS_jSRassw"
 # The Chat ID for your Admin Team's group.
 TARGET_CHAT_ID = -1002848963725
 # The ID of the root folder in Google Drive where submission folders will be created.
-# Leave as None to create a new root folder named "Form Submissions".
+# Leave as None to create a new root folder named "Form Submissions" inside the Shared Drive.
 DRIVE_ROOT_FOLDER_ID = None
+# --- NEW: Shared Drive Configuration ---
+# The ID of the Shared Drive where all files and folders will be stored.
+DRIVE_SHARED_DRIVE_ID = "0AGdZJTCMSrecUk9PVA"
+
 
 # --- Google Sheets Configuration ---
 # The URL of your Google Sheet.
@@ -147,9 +151,10 @@ async def get_all_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def get_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores photos as they are uploaded."""
-    photo_file = await update.message.photo[-1].get_file()
-    context.user_data["photos"].append(photo_file)
+    """Stores the file_id of photos as they are uploaded to prevent expired links."""
+    # Store the permanent file_id instead of the temporary file object
+    file_id = update.message.photo[-1].file_id
+    context.user_data["photos"].append(file_id)
     return GET_PHOTOS
 
 
@@ -192,27 +197,56 @@ async def photos_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return CONFIRM_SUBMISSION
 
 def upload_to_drive(drive_service, container_folder_id, file_content, file_name):
-    """Uploads a file from memory to a specific Google Drive folder."""
+    """Uploads a file from memory to a specific Google Drive folder, supporting Shared Drives."""
     file_metadata = {'name': file_name, 'parents': [container_folder_id]}
     media = MediaIoBaseUpload(io.BytesIO(file_content), mimetype='image/jpeg', resumable=True)
-    file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-    drive_service.permissions().create(fileId=file.get('id'), body={'type': 'anyone', 'role': 'reader'}).execute()
+    
+    file = drive_service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields='id, webViewLink',
+        supportsAllDrives=True  # Add support for Shared Drives
+    ).execute()
+    
+    # This permission might be needed if the Shared Drive settings are restrictive
+    drive_service.permissions().create(
+        fileId=file.get('id'),
+        body={'type': 'anyone', 'role': 'reader'},
+        supportsAllDrives=True  # Add support for Shared Drives
+    ).execute()
     return file.get('webViewLink')
 
-def get_or_create_folder(drive_service, folder_name, parent_id=None):
-    """Finds a folder by name or creates it if it doesn't exist."""
-    query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder'"
+def get_or_create_folder(drive_service, folder_name, parent_id=None, shared_drive_id=None):
+    """Finds a folder by name within a Shared Drive or creates it if it doesn't exist."""
+    query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed = false"
     if parent_id:
         query += f" and '{parent_id}' in parents"
-    
-    response = drive_service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+
+    # Search within the Shared Drive
+    response = drive_service.files().list(
+        q=query,
+        driveId=shared_drive_id,
+        corpora='drive',
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True,
+        fields='files(id, name)'
+    ).execute()
+
     if response.get('files'):
         return response.get('files')[0].get('id')
     else:
+        # If no parent is specified, the parent will be the Shared Drive's top-level folder
         file_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}
         if parent_id:
             file_metadata['parents'] = [parent_id]
-        folder = drive_service.files().create(body=file_metadata, fields='id').execute()
+        elif shared_drive_id:
+             file_metadata['parents'] = [shared_drive_id]
+        
+        folder = drive_service.files().create(
+            body=file_metadata,
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
         return folder.get('id')
 
 def send_email_report(subject: str, html_body: str):
@@ -257,14 +291,27 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     drive_photo_links = []
     try:
         gspread_client, drive_service = get_google_services()
-        photo_files = user_data.get("photos", [])
-        if photo_files:
-                # Updated root folder name to match Apps Script
-                root_folder_id = DRIVE_ROOT_FOLDER_ID or get_or_create_folder(drive_service, "Form Submissions")
-                container_folder_id = get_or_create_folder(drive_service, user_data['container_number'], root_folder_id)
+        # Retrieve the list of file_ids
+        photo_file_ids = user_data.get("photos", [])
+        if photo_file_ids:
+                # Ensure a Shared Drive ID is configured before proceeding
+                if not DRIVE_SHARED_DRIVE_ID:
+                    logger.error("FATAL: DRIVE_SHARED_DRIVE_ID is not configured in the script.")
+                    await update.message.reply_text("Bot configuration error: The Shared Drive is not set up. Please notify an admin immediately.")
+                    return ConversationHandler.END
+
+                # The root folder is now inside the Shared Drive
+                root_folder_id = DRIVE_ROOT_FOLDER_ID or get_or_create_folder(drive_service, "Form Submissions", parent_id=DRIVE_SHARED_DRIVE_ID, shared_drive_id=DRIVE_SHARED_DRIVE_ID)
                 
-                for i, photo_file in enumerate(photo_files):
-                    file_content = await photo_file.download_as_bytearray()
+                # The container folder is created inside the root folder
+                container_folder_id = get_or_create_folder(drive_service, user_data['container_number'], parent_id=root_folder_id, shared_drive_id=DRIVE_SHARED_DRIVE_ID)
+                
+                # Iterate through the stored file_ids
+                for i, file_id in enumerate(photo_file_ids):
+                    # Get a fresh file object using the file_id to ensure the link is valid
+                    new_file = await context.bot.get_file(file_id)
+                    # Download its content
+                    file_content = await new_file.download_as_bytearray()
                     file_name = f"photo_{i+1}_{submission_time.strftime('%Y-%m-%d_%H-%M-%S')}.jpg"
                     drive_link = upload_to_drive(drive_service, container_folder_id, file_content, file_name)
                     drive_photo_links.append(drive_link)
@@ -356,7 +403,8 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     if TARGET_CHAT_ID:
         try:
-            photo_ids = [pf.file_id for pf in user_data.get("photos", [])]
+            # user_data['photos'] now contains file_ids directly
+            photo_ids = user_data.get("photos", [])
             if photo_ids:
                 media_group = [InputMediaPhoto(media=pid) for pid in photo_ids]
                 media_group[0] = InputMediaPhoto(media=photo_ids[0], caption=final_report_markdown, parse_mode='Markdown')
