@@ -277,11 +277,8 @@ def upload_to_drive(drive_service, container_folder_id, file_content, file_name)
         supportsAllDrives=True
     ).execute()
     
-    drive_service.permissions().create(
-        fileId=file.get('id'),
-        body={'type': 'anyone', 'role': 'reader'},
-        supportsAllDrives=True
-    ).execute()
+    # The permission setting is removed from here as it's inherited from the Shared Drive
+    # and was causing the 'cannotModifyInheritedPermission' error.
     return file.get('webViewLink')
 
 def get_or_create_folder(drive_service, folder_name, parent_id=None, shared_drive_id=None):
