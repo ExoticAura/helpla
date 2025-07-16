@@ -33,7 +33,7 @@ TARGET_CHAT_ID = -1002848963725
 # The ID of the root folder in Google Drive where submission folders will be created.
 # Leave as None to create a new root folder named "Form Submissions" inside the Shared Drive.
 DRIVE_ROOT_FOLDER_ID = None
-# --- NEW: Shared Drive Configuration ---
+# --- Shared Drive Configuration ---
 # The ID of the Shared Drive where all files and folders will be stored.
 DRIVE_SHARED_DRIVE_ID = "0AGdZJTCMSrecUk9PVA"
 
@@ -53,10 +53,9 @@ logger = logging.getLogger(__name__)
     SELECT_TYPE,
     SELECT_ACTIVITY,
     GET_OTHER_ACTIVITY,
-    GET_ALL_TEXT,
-    GET_PHOTOS,
+    AWAITING_DATA,
     CONFIRM_SUBMISSION,
-) = range(6)
+) = range(5)
 
 def get_google_services():
     """Authenticates with Google using environment variables and returns clients."""
@@ -110,6 +109,31 @@ async def start_submission_from_button(update: Update, context: ContextTypes.DEF
     await query.edit_message_text(text="Please select the submission type:", reply_markup=reply_markup)
     return SELECT_TYPE
 
+async def request_details_and_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Sends the combined instruction message to the user."""
+    chat_id = update.effective_chat.id
+    context.user_data["photos"] = []
+    context.user_data["details_received"] = False
+
+    instructions = (
+        "Please send all required photos now.\n\n"
+        "**IMPORTANT**: Add the following details as a **caption to the first photo**, with each item on a new line:\n"
+        "1. Container/Reference Number\n"
+        "2. Number of Pallets/Cartons (托盘数量)\n"
+        "3. Damage Notes/Remarks (备注/损坏说明) (or 'None')"
+        "\n\nPress the button below when all photos have been sent."
+    )
+    
+    reply_keyboard = [["Confirm & Proceed"]]
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=instructions,
+        parse_mode='Markdown',
+        reply_markup=ReplyKeyboardMarkup(
+            reply_keyboard, one_time_keyboard=True, resize_keyboard=True
+        ),
+    )
+    return AWAITING_DATA
 
 async def get_submission_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Stores the submission type and directs the user to the next step."""
@@ -121,14 +145,7 @@ async def get_submission_type(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.edit_message_text(text=f"You selected: {submission_type}")
 
     if submission_type in ["Inbound", "Outbound"]:
-        instructions = (
-            "Now, please provide the following details in a single message, with each item on a new line:\n"
-            "1. Container/Reference Number\n"
-            "2. Number of Pallets/Cartons (托盘数量)\n"
-            "3. Damage Notes/Remarks (备注/损坏说明) (or 'None' if not applicable)"
-        )
-        await context.bot.send_message(chat_id=query.message.chat_id, text=instructions)
-        return GET_ALL_TEXT
+        return await request_details_and_photos(update, context)
     
     elif submission_type == "General warehousing activity":
         keyboard = [
@@ -153,80 +170,50 @@ async def get_activity_type(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     context.user_data["activity_type"] = activity_type
     await query.edit_message_text(text=f"Process type selected: {activity_type}")
-    
-    instructions = (
-        "Now, please provide the following details in a single message, with each item on a new line:\n"
-        "1. Container/Reference Number\n"
-        "2. Number of Pallets/Cartons (托盘数量)\n"
-        "3. Damage Notes/Remarks (备注/损坏说明) (or 'None' if not applicable)"
-    )
-    await context.bot.send_message(chat_id=query.message.chat_id, text=instructions)
-    return GET_ALL_TEXT
+    return await request_details_and_photos(update, context)
 
 async def get_other_activity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handles the custom 'Others' activity typed by the user."""
     activity_type = update.message.text
     context.user_data["activity_type"] = activity_type
     await update.message.reply_text(f"Process type set to: {activity_type}")
+    return await request_details_and_photos(update, context)
 
-    instructions = (
-        "Now, please provide the following details in a single message, with each item on a new line:\n"
-        "1. Container/Reference Number\n"
-        "2. Number of Pallets/Cartons (托盘数量)\n"
-        "3. Damage Notes/Remarks (备注/损坏说明) (or 'None' if not applicable)"
-    )
-    await context.bot.send_message(chat_id=update.message.chat_id, text=instructions)
-    return GET_ALL_TEXT
+async def handle_data_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receives photos and captioned text details."""
+    # Store photo file_id
+    context.user_data["photos"].append(update.message.photo[-1].file_id)
 
-async def get_all_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Parses the single multi-line message for all text data."""
-    lines = update.message.text.split('\n')
-    if len(lines) < 3:
-        await update.message.reply_text(
-            "The format seems incorrect. Please provide the three pieces of information, each on a new line."
-        )
-        return GET_ALL_TEXT
+    # If there's a caption and we haven't processed details yet
+    if update.message.caption and not context.user_data.get("details_received"):
+        lines = update.message.caption.split('\n')
+        if len(lines) < 3:
+            await update.message.reply_text(
+                "The caption format seems incorrect. Please ensure you provide the three pieces of information, each on a new line in the caption of your first photo."
+            )
+        else:
+            context.user_data["container_number"] = lines[0].strip()
+            context.user_data["quantity"] = lines[1].strip()
+            context.user_data["notes"] = "\n".join(lines[2:]).strip()
+            context.user_data["details_received"] = True
+            await update.message.reply_text("✅ Details and photo received. Send more photos if needed.")
+    
+    return AWAITING_DATA
 
-    context.user_data["container_number"] = lines[0].strip()
-    context.user_data["quantity"] = lines[1].strip()
-    context.user_data["notes"] = "\n".join(lines[2:]).strip() 
-
-    context.user_data["photos"] = []
-    reply_keyboard = [["Done Uploading"]]
-    await update.message.reply_text(
-        "Thank you. Now, please upload the required photos (照片选项).\n"
-        "Send your photos now. Press 'Done Uploading' when you are finished.",
-        reply_markup=ReplyKeyboardMarkup(
-            reply_keyboard, one_time_keyboard=True, resize_keyboard=True
-        ),
-    )
-    return GET_PHOTOS
-
-
-async def get_photos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the file_id of photos as they are uploaded to prevent expired links."""
-    file_id = update.message.photo[-1].file_id
-    context.user_data["photos"].append(file_id)
-    return GET_PHOTOS
-
-
-async def photos_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Finalizes photo upload, ensures at least one photo is present, and shows summary for confirmation."""
+async def proceed_to_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Finalizes data upload, ensures all data is present, and shows summary."""
     user_data = context.user_data
-    photo_count = len(user_data.get('photos', []))
+    
+    # Validation checks
+    if not user_data.get("photos"):
+        await update.message.reply_text("⚠️ **A photo is required.**\nPlease upload at least one photo before proceeding.")
+        return AWAITING_DATA
+    if not user_data.get("details_received"):
+        await update.message.reply_text("⚠️ **Details are missing.**\nPlease send a photo with the required details in the caption.")
+        return AWAITING_DATA
 
-    if photo_count == 0:
-        reply_keyboard = [["Done Uploading"]]
-        await update.message.reply_text(
-            "⚠️ **A photo is required.**\n\nPlease upload at least one photo and then press 'Done Uploading'.",
-            reply_markup=ReplyKeyboardMarkup(
-                reply_keyboard, one_time_keyboard=True, resize_keyboard=True
-            ),
-            parse_mode='Markdown'
-        )
-        return GET_PHOTOS
-
-    await update.message.reply_text(f"Thank you. {photo_count} photo(s) have been received.", reply_markup=ReplyKeyboardRemove())
+    photo_count = len(user_data['photos'])
+    await update.message.reply_text(f"Thank you. All {photo_count} photo(s) have been received.", reply_markup=ReplyKeyboardRemove())
     
     summary = (
         f"✅ *New Submission Summary / 提交总结*\n\n"
@@ -366,11 +353,9 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     formatted_timestamp = submission_time.strftime("%d/%m/%Y %H:%M:%S")
     
-    # --- Dynamic Report Generation ---
     submission_type = user_data['submission_type']
-    activity_type = user_data.get('activity_type') # Will be None if not a general activity
+    activity_type = user_data.get('activity_type')
 
-    # Build the list of data points for email and admin reports
     qa_list = []
     if activity_type:
         email_subject = f"{activity_type} Submission: {user_data['container_number']} @ {formatted_timestamp}"
@@ -384,10 +369,8 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         qa_list.append({"question": "Number of Pallets/Cartons / 托盘数量", "answer": user_data['quantity']})
         qa_list.append({"question": "Damage Notes/Remarks / 备注/损坏说明", "answer": user_data['notes']})
 
-    # --- Send Email Notification ---
     email_html_body = f"<h2>{email_subject}</h2><ul>"
     for pair in qa_list:
-        # Use the first photo as the main one in the email for general activity
         if activity_type and pair["question"] == "Number of Pallets/Carton & Damage notes / Remarks":
              email_html_body += f'<li><b>Photo Option / 照片选项</b>: {drive_photo_links[0] if drive_photo_links else "N/A"}</li>'
         email_html_body += f"<li><b>{pair['question']}</b>: {pair['answer']}</li>"
@@ -401,12 +384,10 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     send_email_report(email_subject, email_html_body)
 
-    # --- Update Google Sheet ---
     try:
         gspread_client, _ = get_google_services()
         spreadsheet = gspread_client.open_by_url(GOOGLE_SHEET_URL)
         
-        # Determine worksheet and row structure based on submission type
         if submission_type == "Inbound":
             worksheet_name = "Inbound Submissions 20/5/2025"
             headers = ["Timestamp", "Email Address", "Container/PO Number", "Number of Pallets/ Carton (托盘数量)", "Damage notes (备注/损坏说明) / Remarks", "Photo Option / 照片选项", "Additional Photo Option", "Additional Photo Option #2", "All Photo Links"]
@@ -427,7 +408,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 drive_photo_links[1] if len(drive_photo_links) > 1 else "",
                 "\n".join(drive_photo_links[2:]) if len(drive_photo_links) > 2 else "", ""
             ]
-        else: # General Warehousing Activity
+        else: 
             worksheet_name = "General Warehouse Activity 20/5/2025"
             headers = ["Timestamp", "Email address", "Container/PO Number", "Process type", "Number of Pallets/Carton & Damage notes / Remarks", "Photo Option / 照片选项", "Additional Photo Option", "Additional Photo Option #2", "All Photo Links"]
             sheet_row = [
@@ -455,7 +436,6 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     await update.message.reply_text("Submission complete!")
 
-    # --- Send to Admin Group ---
     final_report_markdown = (
         f"📝 *New Logistics Report / 新物流报告*\n\n"
         f"*Timestamp / 时间戳:* {formatted_timestamp}\n"
@@ -486,7 +466,6 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             error_message = f"Failed to send report to the admin group. Please notify an admin.\n\n*Error details:* `{e}`"
             await update.message.reply_text(error_message, parse_mode='Markdown')
 
-    # --- Offer to start a new submission ---
     keyboard = [[InlineKeyboardButton("Start New Submission", callback_data="new_submission")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Ready for the next one?", reply_markup=reply_markup)
@@ -515,10 +494,9 @@ def main() -> None:
             SELECT_TYPE: [CallbackQueryHandler(get_submission_type)],
             SELECT_ACTIVITY: [CallbackQueryHandler(get_activity_type)],
             GET_OTHER_ACTIVITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_other_activity)],
-            GET_ALL_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_all_text)],
-            GET_PHOTOS: [
-                MessageHandler(filters.PHOTO, get_photos),
-                MessageHandler(filters.Regex("^Done Uploading$"), photos_done),
+            AWAITING_DATA: [
+                MessageHandler(filters.PHOTO, handle_data_input),
+                MessageHandler(filters.Regex("^Confirm & Proceed$"), proceed_to_confirmation),
             ],
             CONFIRM_SUBMISSION: [
                 MessageHandler(filters.Regex("^Confirm & Submit$"), submit),
