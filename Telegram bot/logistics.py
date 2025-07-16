@@ -463,7 +463,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Submission complete!")
 
     final_report_markdown = (
-        f"� *New Logistics Report / 新物流报告*\n\n"
+        f"📝 *New Logistics Report / 新物流报告*\n\n"
         f"*Timestamp / 时间戳:* {formatted_timestamp}\n"
         f"*Submitted by / 提交人:* {user.full_name} (@{user.username})\n"
         f"*Submission Type:* `{submission_type}`\n"
@@ -542,4 +542,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-�
