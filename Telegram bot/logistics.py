@@ -200,16 +200,42 @@ async def handle_data_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     return AWAITING_DATA
 
+async def wrong_input_in_data_state(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handles incorrect text messages during the data input phase."""
+    reply_keyboard = [["Confirm & Proceed"]]
+    await update.message.reply_text(
+        "Invalid input. Please send **photos**. The details should be in the caption of the first photo.\n\n"
+        "When you are done sending all photos, press the 'Confirm & Proceed' button.",
+        parse_mode='Markdown',
+        reply_markup=ReplyKeyboardMarkup(
+            reply_keyboard, one_time_keyboard=True, resize_keyboard=True
+        )
+    )
+    return AWAITING_DATA
+
 async def proceed_to_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Finalizes data upload, ensures all data is present, and shows summary."""
     user_data = context.user_data
     
+    reply_keyboard = [["Confirm & Proceed"]]
+    reply_markup = ReplyKeyboardMarkup(
+        reply_keyboard, one_time_keyboard=True, resize_keyboard=True
+    )
+    
     # Validation checks
     if not user_data.get("photos"):
-        await update.message.reply_text("⚠️ **A photo is required.**\nPlease upload at least one photo before proceeding.")
+        await update.message.reply_text(
+            "⚠️ **A photo is required.**\nPlease upload at least one photo and then press 'Confirm & Proceed'.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
         return AWAITING_DATA
     if not user_data.get("details_received"):
-        await update.message.reply_text("⚠️ **Details are missing.**\nPlease send a photo with the required details in the caption.")
+        await update.message.reply_text(
+            "⚠️ **Details are missing.**\nPlease send a photo with the required details in the caption, then press 'Confirm & Proceed'.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
         return AWAITING_DATA
 
     photo_count = len(user_data['photos'])
@@ -230,11 +256,11 @@ async def proceed_to_confirmation(update: Update, context: ContextTypes.DEFAULT_
     )
     await update.message.reply_text(summary, parse_mode='Markdown')
     
-    reply_keyboard = [["Confirm & Submit", "Cancel"]]
+    reply_keyboard_confirm = [["Confirm & Submit", "Cancel"]]
     await update.message.reply_text(
         "Please review the details above. If everything is correct, press 'Confirm & Submit'.",
         reply_markup=ReplyKeyboardMarkup(
-            reply_keyboard, one_time_keyboard=True, resize_keyboard=True
+            reply_keyboard_confirm, one_time_keyboard=True, resize_keyboard=True
         ),
     )
     return CONFIRM_SUBMISSION
@@ -437,7 +463,7 @@ async def submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Submission complete!")
 
     final_report_markdown = (
-        f"📝 *New Logistics Report / 新物流报告*\n\n"
+        f"� *New Logistics Report / 新物流报告*\n\n"
         f"*Timestamp / 时间戳:* {formatted_timestamp}\n"
         f"*Submitted by / 提交人:* {user.full_name} (@{user.username})\n"
         f"*Submission Type:* `{submission_type}`\n"
@@ -497,6 +523,7 @@ def main() -> None:
             AWAITING_DATA: [
                 MessageHandler(filters.PHOTO, handle_data_input),
                 MessageHandler(filters.Regex("^Confirm & Proceed$"), proceed_to_confirmation),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, wrong_input_in_data_state)
             ],
             CONFIRM_SUBMISSION: [
                 MessageHandler(filters.Regex("^Confirm & Submit$"), submit),
@@ -515,3 +542,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+�
