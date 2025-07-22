@@ -277,8 +277,6 @@ def upload_to_drive(drive_service, container_folder_id, file_content, file_name)
         supportsAllDrives=True
     ).execute()
     
-    # The permission setting is removed from here as it's inherited from the Shared Drive
-    # and was causing the 'cannotModifyInheritedPermission' error.
     return file.get('webViewLink')
 
 def get_or_create_folder(drive_service, folder_name, parent_id=None, shared_drive_id=None):
@@ -506,7 +504,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 def main() -> None:
     """Sets up and runs the bot."""
-    application = Application.builder().token(BOT_TOKEN).build()
+    # --- NEW: Set higher timeouts for handling large files ---
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .connect_timeout(60)
+        .read_timeout(60)
+        .build()
+    )
     
     conv_handler = ConversationHandler(
         entry_points=[
